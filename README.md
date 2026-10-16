@@ -240,7 +240,7 @@ The repository includes [`render.yaml`](render.yaml), which runs the payment API
 4. Enter `ENCRYPTION_MASTER_KEY` as a 64-character hex string, plus the admin email and password.
 5. Deploy and open the generated `https://<service>.onrender.com` URL. The demo store is at `/`, checkout is at `/checkout/:paymentId`, and the admin panel is at `/admin`.
 
-If you create a Web Service manually instead of using the Blueprint, use **Build Command** `npm ci` and **Start Command** `node scripts/render-start.js`. Do not use `npm install; npm run build`: the repository runtime is JavaScript, while the optional root TypeScript project references are not a deployment build and will fail on Render.
+If you create a Web Service manually instead of using the Blueprint, use **Build Command** `npm ci` and **Start Command** `node scripts/render-start.js`. `npm start` is also Render-aware and delegates to the same launcher when Render's `RENDER_EXTERNAL_URL` is present. Do not use `npm install; npm run build` as the only deployment setup: the repository runtime is JavaScript, while the optional root TypeScript project references are not a deployment build.
 
 The Blueprint leaves the Gmail/SMS observers disabled by default to fit the Free instance. Set `RENDER_ENABLE_OBSERVERS=true` in Render after deployment when you have configured the observer credentials and want to run them in the same service.
 

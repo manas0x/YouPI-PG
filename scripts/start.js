@@ -10,6 +10,18 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, '..');
 
+// Render provides RENDER_EXTERNAL_URL automatically. Use the single-port
+// launcher there instead of the Cloudflare production supervisor, which is
+// intended for a self-hosted multi-domain deployment.
+const isRenderDeployment = Boolean(
+  process.env.RENDER_EXTERNAL_URL ||
+  process.env.RENDER_SERVICE_ID ||
+  process.env.RENDER_INSTANCE_ID
+);
+
+if (isRenderDeployment) {
+  await import('./render-start.js');
+} else {
 // Authoritative runtime mode enforcement (Part B1 & B4)
 process.env.YOUPI_MODE = 'production';
 process.env.NODE_ENV = 'production';
@@ -123,3 +135,4 @@ const shutdown = async () => {
 
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
+}

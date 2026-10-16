@@ -17,6 +17,19 @@ import { isTerminalStatus, toPublicOutcome } from '@youpi/core';
  */
 export function registerPaymentRoutes(server, ctx) {
   function resolveCheckoutBaseUrl(merchant) {
+    // Hosted deployments expose one public origin. Prefer it over merchant
+    // branding's local-development mode so generated checkout URLs are
+    // reachable from the customer's browser.
+    const hostedBaseUrl = (
+      process.env.PUBLIC_BASE_URL ||
+      process.env.RENDER_EXTERNAL_URL ||
+      process.env.BASE_CHECKOUT_URL ||
+      ''
+    ).trim().replace(/\/+$/, '');
+    if (hostedBaseUrl && !/^(https?:\/\/)?(localhost|127\.0\.0\.1)(:\d+)?$/i.test(hostedBaseUrl)) {
+      return hostedBaseUrl;
+    }
+
     if (merchant?.branding) {
       try {
         const urls = resolveRuntimeUrls(merchant.branding);

@@ -394,9 +394,24 @@ export function registerPollerRoutes(server, ctx) {
     if (!merchant && ctx.merchantRepo) merchant = ctx.merchantRepo.getDefault ? ctx.merchantRepo.getDefault() : (ctx.merchantRepo.findById('00000000-0000-0000-0000-000000000001') || ctx.merchantRepo.findAll()[0]);
     const merchantId = merchant ? merchant.id : (req.query.merchantId || '00000000-0000-0000-0000-000000000001');
 
-    // Canonical runtime URL derivation (Part C2)
+    // The Android app must receive a URL reachable from the phone. On Render,
+    // all internal services share one public origin, so the localhost API
+    // port must never be placed in the pairing payload.
+    const configuredPublicBase = (
+      process.env.PUBLIC_BASE_URL ||
+      process.env.RENDER_EXTERNAL_URL ||
+      process.env.BASE_PAYMENT_API_URL ||
+      ''
+    ).trim().replace(/\/+$/, '');
+    const forwardedHost = String(req.headers['x-forwarded-host'] || '').trim();
+    const forwardedProto = String(req.headers['x-forwarded-proto'] || 'https').split(',')[0].trim();
+    const forwardedPublicBase = forwardedHost && !/^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(forwardedHost)
+      ? `${forwardedProto}://${forwardedHost}`.replace(/\/+$/, '')
+      : '';
+
+    // Canonical runtime URL derivation remains the local/self-hosted fallback.
     const runtime = resolveRuntimeUrls(merchant?.branding || {});
-    const baseUrl = runtime.apiUrl;
+    const baseUrl = configuredPublicBase || forwardedPublicBase || runtime.apiUrl;
     const token = enrollmentSecret;
     const sessionId = crypto.randomUUID();
     const expiresAt = Date.now() + (10 * 60 * 1000); // 10 minutes

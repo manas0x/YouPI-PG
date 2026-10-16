@@ -374,10 +374,17 @@ export class CoinWalletStoreServer {
               createdAt: new Date().toISOString()
             });
 
-            // Normalize checkoutUrl for localhost development / testing to prevent tunnel offline issues
+            // Normalize checkout URLs for both local development and hosted
+            // single-origin deployments. Merchant branding can remain in
+            // localhost mode while Render still needs a browser-reachable URL.
             let resolvedCheckoutUrl = payment.checkoutUrl;
-            if (host.includes('localhost') || host.includes('127.0.0.1')) {
-              resolvedCheckoutUrl = `${proto}://${host}/checkout/${payment.paymentId}`;
+            const publicCheckoutOrigin = `${proto}://${host}`.replace(/\/+$/, '');
+            if (
+              host.includes('localhost') ||
+              host.includes('127.0.0.1') ||
+              /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i.test(resolvedCheckoutUrl || '')
+            ) {
+              resolvedCheckoutUrl = `${publicCheckoutOrigin}/checkout/${payment.paymentId}`;
             }
 
             res.writeHead(200, {

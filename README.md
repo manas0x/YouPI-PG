@@ -215,6 +215,35 @@ That's it! Your entire gateway cluster will spin up:
 - ⚡ **Payment REST API:** [`http://localhost:6100`](http://localhost:6100)
 - 💳 **Customer Checkout Portal:** [`http://localhost:7000`](http://localhost:7000)
 
+### Test the demo payment store
+
+Open [`http://localhost:5000`](http://localhost:5000) and choose the ₹1 demo amount. The store creates a real gateway session, opens the hosted checkout in the official `youpi.js` modal, and displays the outcome pages documented in [`AGENTS.md`](AGENTS.md).
+
+For a successful payment, the browser event only updates the demo UI. The wallet balance changes only after the store verifies the raw request body against `X-Gateway-Signature` and receives the matching server-to-server `SUCCESS` webhook at `/api/webhook`. This keeps the demo aligned with the production rule that browser callbacks never fulfill orders.
+
+Useful local checks:
+
+```bash
+curl http://localhost:5000/health
+curl http://localhost:5000/api/wallet-balance
+```
+
+The store is implemented in [`apps/coin-wallet-store`](apps/coin-wallet-store). Its integration test covers payment-session creation, signed webhook fulfillment, signature rejection, idempotency, the read-only order-status poll, and all five outcome pages.
+
+### Deploy the gateway on Render
+
+The repository includes [`render.yaml`](render.yaml), which runs the payment API, checkout portal, demo store, and merchant admin behind one Render web service. Render forwards traffic to one public port, so [`scripts/render-start.js`](scripts/render-start.js) keeps the internal services on loopback ports and routes public paths to the correct service.
+
+1. Push this repository to GitHub.
+2. In Render, choose **New → Blueprint** and select the repository.
+3. Keep the generated `COIN_STORE_WEBHOOK_SECRET` and `JWT_SECRET` values.
+4. Enter `ENCRYPTION_MASTER_KEY` as a 64-character hex string, plus the admin email and password.
+5. Deploy and open the generated `https://<service>.onrender.com` URL. The demo store is at `/`, checkout is at `/checkout/:paymentId`, and the admin panel is at `/admin`.
+
+The Blueprint leaves the Gmail/SMS observers disabled by default to fit the Free instance. Set `RENDER_ENABLE_OBSERVERS=true` in Render after deployment when you have configured the observer credentials and want to run them in the same service.
+
+This free deployment is for gateway testing only: Render Free services sleep after 15 minutes of inactivity and their filesystem is ephemeral, so the SQLite database resets after restarts or redeploys. Render documents those limitations and recommends an external datastore for persistent data. [Render web services](https://render.com/docs/web-services) · [Render free services](https://render.com/docs/free)
+
 ### 4. Run the Full Regression Test Suite
 Verify all **31 test suites** across packages, apps, and chaos harnesses:
 ```bash

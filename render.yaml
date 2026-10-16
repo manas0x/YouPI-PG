@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: youpi-pg-gateway
+    runtime: node
+    plan: free
+    buildCommand: npm ci
+    startCommand: node scripts/render-start.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: development
+      - key: NODE_VERSION
+        value: "24.0.0"
+      - key: YOUPI_MODE
+        value: localhost
+      - key: SQLITE_DB_PATH
+        value: /tmp/youpi_pg.sqlite
+      - key: RENDER_ENABLE_OBSERVERS
+        value: "false"
+      - key: COIN_STORE_WEBHOOK_SECRET
+        generateValue: true
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ENCRYPTION_MASTER_KEY
+        sync: false
+      - key: INITIAL_ADMIN_EMAIL
+        sync: false
+      - key: INITIAL_ADMIN_PASSWORD
+        sync: false

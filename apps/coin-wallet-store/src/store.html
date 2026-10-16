@@ -1080,7 +1080,7 @@
                   data-suspicious-url="/order-suspicious"
                   data-expired-url="/order-expired"
                   data-cancelled-url="/order-cancelled"
-                  onclick="startGatewayPurchase()">
+                  onclick="event.stopPropagation(); startGatewayPurchase()">
             <span>⚡ Buy Now with YOUPI PG · <span id="btnAmountDisplay">₹1.00</span></span>
           </button>
 
@@ -1623,9 +1623,9 @@ app.post('/api/youpi-webhook', express.raw({ type: 'application/json' }), (req, 
   <div class="celebration-modal" id="celebrationModal">
     <div class="celebration-card">
       <div class="celebration-icon">✓</div>
-      <h2 style="font-family:'Outfit',sans-serif; font-size:1.6rem; font-weight:800; color:#0f172a; margin-bottom:0.4rem;">Payment Verified!</h2>
+        <h2 id="celebrationTitle" style="font-family:'Outfit',sans-serif; font-size:1.6rem; font-weight:800; color:#0f172a; margin-bottom:0.4rem;">Checkout Completed</h2>
       <p style="font-size:0.88rem; color:var(--text-muted);">
-        Your transaction was verified via banking observers. Your YOUPI PG Suite license is provisioned.
+        The browser checkout reported success. This demo provisions coins only after the signed server-to-server gateway webhook arrives.
       </p>
 
       <div class="receipt-box">
@@ -1633,7 +1633,7 @@ app.post('/api/youpi-webhook', express.raw({ type: 'application/json' }), (req, 
         <div class="receipt-row"><span>Order ID:</span><span id="receiptOrderId" style="font-family:monospace; font-weight:700;">-</span></div>
         <div class="receipt-row"><span>Payment ID:</span><span id="receiptPaymentId" style="font-family:monospace; font-size:0.75rem;">-</span></div>
         <div class="receipt-row"><span>Amount Paid:</span><strong id="receiptAmountPaid" style="color:#059669; font-size:0.95rem;">₹1.00</strong></div>
-        <div class="receipt-row"><span>License Token:</span><code style="color:#2563eb; font-weight:700;">YPG-SML-2026-LIVE</code></div>
+        <div class="receipt-row"><span>Fulfillment:</span><code id="receiptFulfillment" style="color:#d97706; font-weight:700;">Awaiting webhook</code></div>
       </div>
 
       <button type="button" class="btn-buy-primary" onclick="closeCelebrationModal()" style="padding:0.75rem 1.25rem; font-size:0.95rem;">
@@ -1713,8 +1713,6 @@ app.post('/api/youpi-webhook', express.raw({ type: 'application/json' }), (req, 
         modal.classList.remove('active');
       }
     }
-    }
-
     // --- AMOUNT MODIFIER & BUY BOX ---
     function selectAmount(amt, chipEl) {
       currentAmount = Number(amt);
@@ -1779,7 +1777,7 @@ app.post('/api/youpi-webhook', express.raw({ type: 'application/json' }), (req, 
         }
 
         // 2. Launch checkout modal using official Youpi.pay() SDK
-        window.Youpi.pay({
+        await window.Youpi.pay({
           checkoutUrl: data.checkoutUrl,
           order_id: data.orderId,
           amount: currentAmount,
@@ -1795,6 +1793,7 @@ app.post('/api/youpi-webhook', express.raw({ type: 'application/json' }), (req, 
             btn.disabled = false;
             btn.innerHTML = oldHtml;
             showCelebrationModal(data.orderId, paymentResponse.utr || paymentResponse.paymentId || data.paymentId, currentAmount);
+            watchOrderConfirmation(data.orderId);
           },
           onClose: function() {
             btn.disabled = false;
@@ -1812,21 +1811,7 @@ app.post('/api/youpi-webhook', express.raw({ type: 'application/json' }), (req, 
     window.addEventListener('youpi:payment:success', function(e) {
       console.log('[YOUPI PG Event] youpi:payment:success', e.detail);
       const res = e.detail;
-      fetch('/api/verify-payment', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          orderId: res.order_id,
-          amount: res.amount_received || currentAmount,
-          coins: Math.round(res.amount_received || currentAmount),
-          paymentId: res.utr || res.order_id
-        })
-      }).then(r => r.json()).then(d => {
-        if (d.coins !== undefined) {
-          const el = document.getElementById('topWalletBalance');
-          if (el) el.textContent = d.coins;
-        }
-      }).catch(() => {});
+      watchOrderConfirmation(res.order_id);
     });
 
     window.addEventListener('youpi:payment:failed', function(e) {
@@ -1854,7 +1839,38 @@ app.post('/api/youpi-webhook', express.raw({ type: 'application/json' }), (req, 
       if (elOrder) elOrder.textContent = orderId || 'YOUPI-ORD-LIVE';
       if (elPayment) elPayment.textContent = paymentId || 'pay_verified';
       if (elAmount) elAmount.textContent = '₹' + Number(amount).toFixed(2);
+      const title = document.getElementById('celebrationTitle');
+      const fulfillment = document.getElementById('receiptFulfillment');
+      if (title) title.textContent = 'Checkout Completed';
+      if (fulfillment) fulfillment.textContent = 'Awaiting webhook';
       if (modal) modal.classList.add('active');
+    }
+
+    let orderStatusTimer = null;
+    function watchOrderConfirmation(orderId) {
+      if (!orderId) return;
+      if (orderStatusTimer) clearInterval(orderStatusTimer);
+      let attempts = 0;
+      const poll = async () => {
+        attempts += 1;
+        try {
+          const response = await fetch(`/api/order-status?orderId=${encodeURIComponent(orderId)}`, { cache: 'no-store' });
+          if (!response.ok) return;
+          const data = await response.json();
+          if (data.status === 'PAID' && data.credited) {
+            const balance = document.getElementById('topWalletBalance');
+            const title = document.getElementById('celebrationTitle');
+            const fulfillment = document.getElementById('receiptFulfillment');
+            if (balance) balance.textContent = data.walletCoins;
+            if (title) title.textContent = 'Payment Verified';
+            if (fulfillment) fulfillment.textContent = `${data.coins} coins credited`;
+            clearInterval(orderStatusTimer);
+          }
+        } catch (_) {}
+        if (attempts >= 30 && orderStatusTimer) clearInterval(orderStatusTimer);
+      };
+      poll();
+      orderStatusTimer = setInterval(poll, 1000);
     }
 
     function closeCelebrationModal() {

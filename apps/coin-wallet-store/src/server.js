@@ -29,7 +29,7 @@ export class CoinWalletStoreServer {
     const internalPort = process.env.PAYMENT_API_PORT || 6100;
     this.gatewayApiUrl = options.gatewayApiUrl || process.env.PAYMENT_API_INTERNAL_URL || `http://127.0.0.1:${internalPort}`;
     this.merchantId = options.merchantId || '00000000-0000-0000-0000-000000000001';
-    this.webhookSecret = options.webhookSecret || 'merchant_webhook_secret_for_wallet_store';
+    this.webhookSecret = options.webhookSecret || process.env.COIN_STORE_WEBHOOK_SECRET || 'merchant_webhook_secret_for_wallet_store';
 
     this.paymentClient = new YoupiPaymentClient({
       apiUrl: this.gatewayApiUrl,
@@ -40,6 +40,8 @@ export class CoinWalletStoreServer {
     // In-memory persistent wallet balance & ledger for demo store
     this.walletCoins = 50; // default starting balance
     this.transactionHistory = [];
+    this.pendingOrders = new Map();
+    this.processedDeliveryIds = new Set();
 
     this.storeHtml = fs.readFileSync(path.join(__dirname, 'store.html'), 'utf8');
     this.walletHtml = fs.readFileSync(path.join(__dirname, 'wallet.html'), 'utf8');
@@ -351,10 +353,25 @@ export class CoinWalletStoreServer {
               amount: amountStr,
               currency: 'INR',
               returnUrl,
+              customer: {
+                fullName: data.customerName || data.gamerTag || 'Demo Customer',
+                phoneNumber: data.phoneNumber || ''
+              },
               metadata: {
                 coins: data.coins || Math.round(price),
                 packName: data.packName || data.productName || 'Gamer Pack'
               }
+            });
+
+            this.pendingOrders.set(orderId, {
+              orderId,
+              paymentId: payment.paymentId,
+              amount: amountStr,
+              amountPaise: Math.round(price * 100),
+              coins: Number(data.coins || Math.round(price)),
+              packName: data.packName || data.productName || 'Gamer Pack',
+              status: 'PENDING',
+              createdAt: new Date().toISOString()
             });
 
             // Normalize checkoutUrl for localhost development / testing to prevent tunnel offline issues
@@ -380,96 +397,98 @@ export class CoinWalletStoreServer {
         return;
       }
 
-      // POST /api/verify-payment (Instant confirmation & credit from popup drawer handler)
-      if (pathname === '/api/verify-payment' && method === 'POST') {
-        let body = '';
-        req.on('data', chunk => { body += chunk; });
-        req.on('end', async () => {
-          try {
-            const data = JSON.parse(body || '{}');
-            const { paymentId, orderId, coins, packName } = data;
+      // GET /api/order-status (read-only status for the demo UI)
+      if (pathname === '/api/order-status' && method === 'GET') {
+        const orderId = url.searchParams.get('orderId') || url.searchParams.get('order_id');
+        const order = orderId ? this.pendingOrders.get(orderId) : null;
+        if (!order) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Order not found' }));
+          return;
+        }
 
-            if (!orderId && !paymentId) {
-              res.writeHead(400, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({ error: 'Missing orderId or paymentId' }));
-              return;
-            }
-
-            // Check if already credited
-            const alreadyCredited = this.transactionHistory.some(t => t.orderId === orderId);
-            if (alreadyCredited) {
-              res.writeHead(200, {
-                'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
-              });
-              res.end(JSON.stringify({ success: true, coins: this.walletCoins, message: 'Already credited' }));
-              return;
-            }
-
-            // Verify with payment API if paymentId is available
-            let creditedCoins = Number(coins) || 100;
-            let finalPackName = packName || 'Coin Pack';
-
-            if (paymentId) {
-              try {
-                const session = await this.paymentClient.getPayment(paymentId);
-                if (session) {
-                  if (session.metadata?.coins) creditedCoins = Number(session.metadata.coins);
-                  if (session.metadata?.packName) finalPackName = session.metadata.packName;
-                }
-              } catch (e) {
-                console.warn('[Coin Wallet Store] getPayment check note:', e.message);
-              }
-            }
-
-            this.creditCoins(orderId, creditedCoins, finalPackName);
-            console.log(`[Coin Wallet Store] Verified & credited ${creditedCoins} coins for Order ${orderId}. New balance: ${this.walletCoins}`);
-
-            res.writeHead(200, {
-              'Content-Type': 'application/json',
-              'Access-Control-Allow-Origin': '*'
-            });
-            res.end(JSON.stringify({
-              success: true,
-              coins: this.walletCoins,
-              credited: creditedCoins,
-              packName: finalPackName
-            }));
-          } catch (err) {
-            res.writeHead(500, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: err.message }));
-          }
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-store',
+          'Access-Control-Allow-Origin': '*'
         });
+        res.end(JSON.stringify({
+          orderId: order.orderId,
+          paymentId: order.paymentId,
+          amount: order.amount,
+          coins: order.coins,
+          packName: order.packName,
+          status: order.status,
+          credited: this.transactionHistory.some(item => item.orderId === order.orderId),
+          walletCoins: this.walletCoins
+        }));
+        return;
+      }
+
+      // POST /api/verify-payment is intentionally not a fulfillment endpoint.
+      // Browser callbacks are untrusted; only the signed webhook below credits coins.
+      if (pathname === '/api/verify-payment' && method === 'POST') {
+        res.writeHead(403, {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*'
+        });
+        res.end(JSON.stringify({
+          error: 'Browser payment callbacks cannot fulfill orders. Await the signed gateway webhook.'
+        }));
         return;
       }
 
       // POST /api/webhook or /webhook (Signed webhook listener from YOUPI PG)
       if ((pathname === '/api/webhook' || pathname === '/webhook') && method === 'POST') {
-        let rawBody = '';
-        req.on('data', chunk => { rawBody += chunk; });
+        const chunks = [];
+        req.on('data', chunk => { chunks.push(chunk); });
         req.on('end', () => {
+          const rawBody = Buffer.concat(chunks);
           const signature = req.headers['x-gateway-signature'];
+          const deliveryId = req.headers['x-gateway-delivery-id'];
 
           try {
+            if (deliveryId && this.processedDeliveryIds.has(deliveryId)) {
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ received: true, duplicate: true }));
+              return;
+            }
+
             // Verify HMAC-SHA256 signature using merchant SDK
-            const event = this.paymentClient.verifyWebhook(rawBody, signature);
+            const event = this.paymentClient.verifyWebhook(rawBody.toString('utf8'), signature);
 
             if (event.event === 'SUCCESS' || event.status === 'SUCCESS') {
               const orderId = event.orderId || event.data?.orderId;
+              const pendingOrder = this.pendingOrders.get(orderId);
+              const paymentId = event.paymentId || event.data?.paymentId;
+              const amountPaise = Number(event.amountPaise || event.data?.amountPaise);
+
+              if (!pendingOrder) {
+                throw new Error('Unknown orderId in webhook. Order was not created by this store.');
+              }
+              if (paymentId && paymentId !== pendingOrder.paymentId) {
+                throw new Error('Webhook paymentId does not match the pending store order.');
+              }
+              if (Number.isFinite(amountPaise) && amountPaise !== pendingOrder.amountPaise) {
+                throw new Error('Webhook amount does not match the pending store order.');
+              }
+
               const alreadyCredited = this.transactionHistory.some(t => t.orderId === orderId);
               if (!alreadyCredited) {
-                const coinsToAdd = Number(event.metadata?.coins || event.data?.metadata?.coins) || 100;
-                const packName = event.metadata?.packName || event.data?.metadata?.packName || 'Coin Pack';
-                this.creditCoins(orderId, coinsToAdd, packName);
-                console.log(`[Coin Wallet Store] Webhook received! Credited ${coinsToAdd} coins for Order ${orderId}. New balance: ${this.walletCoins}`);
+                this.creditCoins(orderId, pendingOrder.coins, pendingOrder.packName);
+                pendingOrder.status = 'PAID';
+                pendingOrder.paidAt = new Date().toISOString();
+                console.log(`[Coin Wallet Store] Signed webhook received. Credited ${pendingOrder.coins} coins for Order ${orderId}. New balance: ${this.walletCoins}`);
               }
             }
+
+            if (deliveryId) this.processedDeliveryIds.add(deliveryId);
 
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ received: true, credited: true }));
           } catch (err) {
             console.error('[Coin Wallet Store] Webhook verification failed:', err.message);
-            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.writeHead(err.message.includes('signature') ? 401 : 400, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: err.message }));
           }
         });

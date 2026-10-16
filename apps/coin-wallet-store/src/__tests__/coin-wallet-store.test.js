@@ -104,11 +104,20 @@ describe('Coin Top-Up Wallet Demo Store Integration Tests', () => {
 
   test('POST /api/webhook processes signed SUCCESS event and credits wallet coins', async () => {
     const initialCoins = storeInstance.server.walletCoins;
+    const checkoutRes = await request('/api/checkout', {
+      method: 'POST',
+      body: {
+        packName: 'Gamer Pack',
+        coins: 550,
+        price: 449.00
+      }
+    });
+    assert.equal(checkoutRes.status, 200);
 
     const payloadObj = {
       event: 'SUCCESS',
-      paymentId: 'pay_coin_test_123',
-      orderId: 'COIN-ORD-555',
+      paymentId: checkoutRes.body.paymentId,
+      orderId: checkoutRes.body.orderId,
       amount: '449.00',
       amountPaise: 44900,
       currency: 'INR',
@@ -125,7 +134,8 @@ describe('Coin Top-Up Wallet Demo Store Integration Tests', () => {
     const hookRes = await request('/api/webhook', {
       method: 'POST',
       headers: {
-        'X-Gateway-Signature': `sha256=${signature}`
+        'X-Gateway-Signature': `sha256=${signature}`,
+        'X-Gateway-Delivery-Id': 'demo-delivery-001'
       },
       body: payloadString
     });
@@ -140,7 +150,24 @@ describe('Coin Top-Up Wallet Demo Store Integration Tests', () => {
     const balanceRes = await request('/api/wallet-balance');
     assert.equal(balanceRes.body.coins, initialCoins + 550);
     assert.ok(balanceRes.body.history.length >= 1);
-    assert.equal(balanceRes.body.history[0].orderId, 'COIN-ORD-555');
+    assert.equal(balanceRes.body.history[0].orderId, checkoutRes.body.orderId);
+
+    const statusRes = await request(`/api/order-status?orderId=${encodeURIComponent(checkoutRes.body.orderId)}`);
+    assert.equal(statusRes.status, 200);
+    assert.equal(statusRes.body.status, 'PAID');
+    assert.equal(statusRes.body.credited, true);
+
+    const duplicateRes = await request('/api/webhook', {
+      method: 'POST',
+      headers: {
+        'X-Gateway-Signature': `sha256=${signature}`,
+        'X-Gateway-Delivery-Id': 'demo-delivery-001'
+      },
+      body: payloadString
+    });
+    assert.equal(duplicateRes.status, 200);
+    assert.equal(duplicateRes.body.duplicate, true);
+    assert.equal(storeInstance.server.walletCoins, initialCoins + 550);
   });
 
   test('POST /api/webhook rejects fraudulent signature', async () => {
@@ -153,7 +180,7 @@ describe('Coin Top-Up Wallet Demo Store Integration Tests', () => {
       body: payloadString
     });
 
-    assert.equal(hookRes.status, 400);
+    assert.equal(hookRes.status, 401);
     assert.ok(hookRes.body.error.includes('signature mismatch'));
   });
 
@@ -275,11 +302,10 @@ describe('Coin Top-Up Wallet Demo Store Integration Tests', () => {
     assert.ok(res.body.includes('Try Again'));
   });
 
-  test('POST /api/verify-payment credits coins directly from popup drawer and prevents duplicates', async () => {
+  test('POST /api/verify-payment cannot credit coins from an untrusted browser callback', async () => {
     const initialCoins = storeInstance.server.walletCoins;
     const orderId = `COIN-ORD-POPUP-${Date.now()}`;
 
-    // 1. Initial verification call
     const verifyRes = await request('/api/verify-payment', {
       method: 'POST',
       body: {
@@ -289,25 +315,9 @@ describe('Coin Top-Up Wallet Demo Store Integration Tests', () => {
       }
     });
 
-    assert.equal(verifyRes.status, 200);
-    assert.equal(verifyRes.body.success, true);
-    assert.equal(verifyRes.body.coins, initialCoins + 100);
-    assert.equal(storeInstance.server.walletCoins, initialCoins + 100);
-
-    // 2. Duplicate call must be idempotent
-    const dupRes = await request('/api/verify-payment', {
-      method: 'POST',
-      body: {
-        orderId,
-        coins: 100,
-        packName: 'Starter Pack'
-      }
-    });
-
-    assert.equal(dupRes.status, 200);
-    assert.equal(dupRes.body.success, true);
-    assert.equal(dupRes.body.message, 'Already credited');
-    assert.equal(storeInstance.server.walletCoins, initialCoins + 100);
+    assert.equal(verifyRes.status, 403);
+    assert.ok(verifyRes.body.error.includes('signed gateway webhook'));
+    assert.equal(storeInstance.server.walletCoins, initialCoins);
   });
 
   test('GET /order-success renders verified payment page with parameters', async () => {

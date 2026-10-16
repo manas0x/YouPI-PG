@@ -272,10 +272,6 @@
 
       document.getElementById('walletCoinsDisplay').textContent = (data.coins || 0).toLocaleString();
 
-      if (orderIdParam) {
-        document.getElementById('successBanner').hidden = false;
-      }
-
       const tbody = document.getElementById('walletLedgerBody');
       if (data.history && data.history.length > 0) {
         tbody.innerHTML = data.history.map(item => `
@@ -314,21 +310,7 @@
             amount: price,
             name: 'YOUPI Store',
             description: `${packName}`,
-            handler: async function(paymentResponse) {
-              // Direct instant credit
-              await fetch('/api/verify-payment', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  paymentId: paymentResponse.utr || paymentResponse.paymentId || data.paymentId,
-                  orderId: data.orderId,
-                  coins: coins,
-                  packName: packName
-                })
-              });
-              document.getElementById('successBanner').hidden = false;
-              loadWallet();
-            }
+            handler: function() { watchOrderStatus(data.orderId); }
           });
         } else {
           window.location.href = data.checkoutUrl;
@@ -341,6 +323,31 @@
     }
   }
 
+  function showCreditedBanner() {
+    document.getElementById('successBanner').hidden = false;
+    loadWallet();
+  }
+
+  function watchOrderStatus(orderId) {
+    if (!orderId) return;
+    let attempts = 0;
+    const timer = setInterval(async () => {
+      attempts += 1;
+      try {
+        const res = await fetch(`/api/order-status?orderId=${encodeURIComponent(orderId)}`, { cache: 'no-store' });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.status === 'PAID' && data.credited) {
+            clearInterval(timer);
+            showCreditedBanner();
+          }
+        }
+      } catch (_) {}
+      if (attempts >= 30) clearInterval(timer);
+    }, 1000);
+  }
+
+  if (orderIdParam) watchOrderStatus(orderIdParam);
   loadWallet();
 </script>
 
